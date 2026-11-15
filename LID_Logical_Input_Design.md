@@ -1,6 +1,5 @@
-# Logical Input Design (LID)
-## Project: QueryMind AI — Natural Language to SQL Query Assistant
-### Module: Member 1 — NLP Module (Contract Version 1.0 Compliant)
+# Logical Input Design (LID) — QueryMind AI
+## Module: Member 1 — NLP Module (Contract Version 1.0 Compliant)
 
 ---
 
@@ -11,18 +10,22 @@ Member 1 converts unstructured natural language questions in plain English into 
 
 ---
 
-## 2. Input Specifications
+## 2. Input Specifications & Validation Boundaries
 
 ### 2.1 Primary Input: Natural Language Query
 - **Field Name**: `query`
 - **Function Signature**: `process_natural_language(query: str) -> dict`
 - **Data Type**: `String (UTF-8)`
 - **Origin**: End user via React UI $\rightarrow$ FastAPI Backend $\rightarrow$ `backend.app.nlp.process_natural_language(query)`.
-- **Validation Constraints**:
-  - Minimum Length: 3 characters (e.g. `"all students"`).
-  - Maximum Length: 500 characters.
-  - Allowed Characters: Alphanumeric (`a-z`, `A-Z`, `0-9`), standard punctuation (`.`, `,`, `?`, `'`, `"`, `>`, `<`, `=`, `!`, `-`), and whitespace.
-  - Rejection / Sanitization: Rejects empty strings, whitespace-only queries, script injection tags, and control characters.
+- **Validation Constraints & Restrictions**:
+  - **Minimum Length**: 3 characters (e.g. `"all students"`).
+  - **Maximum Length**: Strict 500-character upper limit (`len(query) <= 500`).
+  - **Allowed Characters**: Alphanumeric (`a-z`, `A-Z`, `0-9`), standard punctuation (`.`, `,`, `?`, `'`, `"`, `>`, `<`, `=`, `!`, `-`), and whitespace.
+  - **Sanitization & Security**:
+    - Rejection of empty or whitespace-only queries (`UNSUPPORTED_QUERY`).
+    - Rejection of script injection and HTML markup (`<script>`, `<style>`, `<div>`, etc.).
+    - Rejection of non-printable ASCII control characters (`ord(c) < 32` or `127`).
+    - Rejection of pure database DDL/DML injection statements (`DROP TABLE`, `DELETE FROM`, etc.).
 
 ### 2.2 Domain Knowledge Base: PostgreSQL Database Schema (Contract Section 7)
 All inputs are mapped against the 3 primary database tables:
@@ -52,11 +55,16 @@ All inputs are mapped against the 3 primary database tables:
 ### 3.1 Intent Classification Mapping
 | Logical Intent | Description | Linguistic Triggers |
 | :--- | :--- | :--- |
-| `SELECT` | Direct retrieval without conditional predicates, or order/limit/join queries | `"show"`, `"display"`, `"list"`, `"find all"`, `"top 5"`, `"descending order"` |
+| `SELECT` | Direct retrieval without conditional predicates, or order/limit/join queries | `"show"`, `"display"`, `"list"`, `"find all"`, `"top 5"`, `"descending order"`, `"enrolled in each course"` |
 | `FILTER` | Filtering rows with WHERE predicate expressions | `"where"`, `"having"`, `"with"`, `"from CSE department"`, `"cgpa above 8.5"`, `">"`, `"<"`, `"="` |
 | `AGGREGATE` | Mathematical aggregations or grouping | `"count"`, `"how many"`, `"average"`, `"avg"`, `"sum"`, `"max"`, `"min"`, `"department-wise"` |
 
-### 3.2 Canonical Output Structure (Canonical IR Version 1.0)
+### 3.2 Relational Join Mapping
+For multi-entity queries connecting students with courses via enrollments (e.g. *"Show students enrolled in each course"*), a two-hop relational join is extracted:
+1. `students` $\rightarrow$ `enrollments` (`students.student_id = enrollments.student_id`)
+2. `enrollments` $\rightarrow$ `courses` (`enrollments.course_id = courses.course_id`)
+
+### 3.3 Canonical Output Structure (Canonical IR Version 1.0)
 Every valid input is converted into the exact contract schema:
 
 ```json
@@ -79,14 +87,24 @@ Every valid input is converted into the exact contract schema:
 }
 ```
 
-### 3.3 Structured Error Schema (Contract Section 6)
-When an input query cannot be understood or is invalid:
+### 3.4 Structured Error Schema (Contract Section 6)
+When an input query violates constraints or cannot be understood:
 ```json
 {
   "success": false,
   "error": {
     "code": "UNSUPPORTED_QUERY",
-    "message": "Input query cannot be empty or whitespace."
+    "message": "Query exceeds maximum allowed limit of 500 characters."
+  }
+}
+```
+Or when no recognized domain entities exist:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ENTITY_NOT_FOUND",
+    "message": "No recognized database entities or attributes found in query."
   }
 }
 ```

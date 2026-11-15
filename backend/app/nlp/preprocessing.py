@@ -20,7 +20,26 @@ PRESERVED_KEYWORDS = {
     "greater", "less", "more", "fewer", "than", "equal", "above", "below",
     "not", "top", "bottom", "highest", "lowest", "count", "average", "avg",
     "sum", "min", "max", "between", "like", "order", "by", "sort", "asc", "desc",
-    "each", "wise", "department-wise", "course-wise", "enrolled", "in", "from"
+    "each", "wise", "department-wise", "course-wise", "enrolled", "in", "from",
+    "and", "or"
+}
+
+# Irregular or domain specific lemma dictionary
+DOMAIN_LEMMAS = {
+    "students": "student",
+    "pupils": "pupil",
+    "scholars": "scholar",
+    "courses": "course",
+    "classes": "class",
+    "subjects": "subject",
+    "departments": "department",
+    "branches": "branch",
+    "enrollments": "enrollment",
+    "enrolled": "enroll",
+    "enrolling": "enroll",
+    "grades": "grade",
+    "marks": "mark",
+    "credits": "credit"
 }
 
 LEMMA_SUFFIXES = [
@@ -54,6 +73,8 @@ class TextPreprocessor:
     def lemmatize_token(self, token: str) -> str:
         """Lemmatizes a token to its base dictionary root."""
         lower = token.lower()
+        if lower in DOMAIN_LEMMAS:
+            return DOMAIN_LEMMAS[lower]
         if len(lower) <= 3:
             return lower
         for suffix, replacement in LEMMA_SUFFIXES:
@@ -96,6 +117,7 @@ class TextPreprocessor:
                 filtered.append(t)
 
         lemmas = [self.lemmatize_token(t) for t in raw_tokens]
+        filtered_lemmas = [self.lemmatize_token(t) for t in filtered]
         pos_tags = self.pos_tag(raw_tokens)
 
         return {
@@ -104,5 +126,7 @@ class TextPreprocessor:
             "tokens": raw_tokens,
             "filtered_tokens": filtered,
             "lemmas": lemmas,
+            "filtered_lemmas": filtered_lemmas,
+            "lemmatized_query": " ".join(lemmas),
             "pos_tags": pos_tags
         }
