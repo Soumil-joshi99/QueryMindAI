@@ -51,22 +51,22 @@ def postgres_engine():
     session = SessionLocal()
     try:
         students = [
-            Student(id=1, student_id=1, name="Aarav Sharma", batch=2024, cgpa=9.1, department="CSE"),
-            Student(id=2, student_id=2, name="Diya Patel", batch=2024, cgpa=8.8, department="AI"),
-            Student(id=3, student_id=3, name="Kabir Verma", batch=2025, cgpa=8.7, department="CSE"),
-            Student(id=4, student_id=4, name="Meera Nair", batch=2025, cgpa=8.2, department="AI"),
-            Student(id=5, student_id=5, name="Rohan Gupta", batch=2024, cgpa=7.9, department="ECE"),
+            Student(student_id=1, name="Aarav Sharma", batch=2024, cgpa=9.1, department="CSE"),
+            Student(student_id=2, name="Diya Patel", batch=2024, cgpa=8.8, department="AI"),
+            Student(student_id=3, name="Kabir Verma", batch=2025, cgpa=8.7, department="CSE"),
+            Student(student_id=4, name="Meera Nair", batch=2025, cgpa=8.2, department="AI"),
+            Student(student_id=5, name="Rohan Gupta", batch=2024, cgpa=7.9, department="ECE"),
         ]
         courses = [
-            Course(id=101, course_id=101, course_name="Database Systems", credits=4, department="CSE"),
-            Course(id=102, course_id=102, course_name="Natural Language Processing", credits=3, department="AI"),
-            Course(id=103, course_id=103, course_name="Data Structures", credits=4, department="CSE"),
+            Course(course_id=101, course_name="Database Systems", credits=4, department="CSE"),
+            Course(course_id=102, course_name="Natural Language Processing", credits=3, department="AI"),
+            Course(course_id=103, course_name="Data Structures", credits=4, department="CSE"),
         ]
         enrollments = [
-            Enrollment(id=1, enrollment_id=1, student_id=1, course_id=101, semester="Fall 2024", grade="A"),
-            Enrollment(id=2, enrollment_id=2, student_id=1, course_id=102, semester="Fall 2024", grade="A-"),
-            Enrollment(id=3, enrollment_id=3, student_id=2, course_id=101, semester="Fall 2024", grade="B+"),
-            Enrollment(id=4, enrollment_id=4, student_id=3, course_id=103, semester="Spring 2025", grade="A"),
+            Enrollment(enrollment_id=1, student_id=1, course_id=101, semester="Fall 2024", grade="A"),
+            Enrollment(enrollment_id=2, student_id=1, course_id=102, semester="Fall 2024", grade="A-"),
+            Enrollment(enrollment_id=3, student_id=2, course_id=101, semester="Fall 2024", grade="B+"),
+            Enrollment(enrollment_id=4, student_id=3, course_id=103, semester="Spring 2025", grade="A"),
         ]
         session.add_all(students + courses + enrollments)
         session.commit()
