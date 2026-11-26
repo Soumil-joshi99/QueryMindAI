@@ -3,9 +3,12 @@ import { Search, Sparkles, CornerDownLeft, XCircle, AlertCircle } from 'lucide-r
 
 const EXAMPLE_QUERIES = [
   "Show students with CGPA above 8.5",
-  "Show top students ordered by CGPA",
+  "Show top 3 students ordered by CGPA",
+  "Show students from CSE department",
+  "Find average CGPA by department",
+  "Show students enrolled in courses",
+  "Count all students",
   "Find courses with credits equal to 4",
-  "List all students",
 ];
 
 /**
