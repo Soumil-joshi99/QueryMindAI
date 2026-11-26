@@ -1,11 +1,13 @@
 """PostgreSQL end-to-end integration tests for QueryMind AI.
 
-Requires a live PostgreSQL database instance configured via DATABASE_URL or TEST_DATABASE_URL.
-In CI, this runs against a dedicated PostgreSQL service container.
-When running locally without PostgreSQL available, tests cleanly skip with an informative reason.
+Requires a live PostgreSQL database instance configured strictly via TEST_DATABASE_URL.
+Never falls back to DATABASE_URL to avoid destructive actions on application databases.
+In CI, this runs against a dedicated PostgreSQL service container (querymind_test_db).
+When running locally without PostgreSQL or TEST_DATABASE_URL, tests cleanly skip with an informative reason.
 """
 
 import os
+from urllib.parse import urlparse, urlunparse
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -13,34 +15,105 @@ from sqlalchemy.orm import sessionmaker
 from app.database.models import Base, Student, Course, Enrollment
 from app.services.database_service import execute_read_query, validate_sql
 
-# Resolve test database URL
-TEST_DB_URL = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or ""
+# TEST_DATABASE_URL is strictly mandatory for PostgreSQL integration tests.
+# Never fall back to DATABASE_URL to protect application and production databases.
+TEST_DB_URL = (os.getenv("TEST_DATABASE_URL") or "").strip()
 
 
-def is_postgres_live() -> bool:
-    """Check if PostgreSQL is reachable at TEST_DB_URL."""
-    if not TEST_DB_URL or "postgres" not in TEST_DB_URL.lower():
-        return False
+def validate_test_database_target(url: str) -> tuple[bool, str]:
+    """Validate that TEST_DATABASE_URL targets a safe, dedicated PostgreSQL test database.
+
+    Requirements:
+    1. URL must be non-empty.
+    2. URL must use a PostgreSQL dialect.
+    3. Target database name must be specified and contain 'test' (e.g. querymind_test_db).
+    """
+    if not url:
+        return (
+            False,
+            "TEST_DATABASE_URL is not configured. Dedicated test database required "
+            "(e.g., export TEST_DATABASE_URL=postgresql+psycopg://postgres:password@localhost:5432/querymind_test_db). "
+            "Skipping real PostgreSQL integration tests.",
+        )
+
     try:
-        engine = create_engine(TEST_DB_URL, connect_args={"connect_timeout": 2})
+        parsed = urlparse(url)
+    except Exception as exc:
+        return False, f"Invalid TEST_DATABASE_URL format: {exc}"
+
+    if not parsed.scheme or not parsed.scheme.startswith("postgres"):
+        return (
+            False,
+            f"TEST_DATABASE_URL must be a PostgreSQL connection URL (received scheme '{parsed.scheme}').",
+        )
+
+    db_name = (parsed.path or "").lstrip("/").strip()
+    if not db_name:
+        return False, "TEST_DATABASE_URL does not specify a target database name."
+
+    # Safeguard: target database name must contain 'test' to prevent accidental destruction
+    if "test" not in db_name.lower():
+        return (
+            False,
+            f"Safety violation: TEST_DATABASE_URL database name '{db_name}' must contain 'test' "
+            "to prevent accidental destruction of non-test databases.",
+        )
+
+    return True, f"Target test database '{db_name}' is valid."
+
+
+def is_postgres_test_db_live(url: str) -> tuple[bool, str]:
+    """Check if the validated test PostgreSQL database is reachable."""
+    is_safe, msg = validate_test_database_target(url)
+    if not is_safe:
+        return False, msg
+
+    try:
+        engine = create_engine(url, connect_args={"connect_timeout": 2})
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         engine.dispose()
-        return True
+        return True, "PostgreSQL test database is live and reachable."
+    except Exception as conn_exc:
+        return False, f"PostgreSQL test database not reachable at {url}: {conn_exc}"
+
+
+# Module-level skip evaluation
+_is_available, _skip_reason = is_postgres_test_db_live(TEST_DB_URL)
+pytestmark = pytest.mark.skipif(not _is_available, reason=_skip_reason)
+
+
+def _cleanup_test_role(admin_engine, role_name: str) -> None:
+    """Safely drop a test role, removing owned objects and dependent privileges first."""
+    try:
+        with admin_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            role_exists = conn.execute(
+                text("SELECT 1 FROM pg_roles WHERE rolname = :r"),
+                {"r": role_name},
+            ).scalar()
+            if role_exists:
+                conn.execute(text(f"DROP OWNED BY {role_name};"))
+                conn.execute(text(f"DROP ROLE IF EXISTS {role_name};"))
     except Exception:
-        return False
-
-
-# Skip the entire module if PostgreSQL is not available
-pytestmark = pytest.mark.skipif(
-    not is_postgres_live(),
-    reason="Live PostgreSQL database not reachable. Skipping real PostgreSQL integration tests.",
-)
+        # Fallback attempted cleanup without crashing teardown
+        try:
+            with admin_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text(f"DROP ROLE IF EXISTS {role_name};"))
+        except Exception:
+            pass
 
 
 @pytest.fixture(scope="module")
 def postgres_engine():
-    """Create a module-scoped SQLAlchemy engine for PostgreSQL integration testing."""
+    """Create a module-scoped SQLAlchemy engine for PostgreSQL integration testing.
+
+    Safety: Strictly validates that the database name contains 'test' before executing any
+    destructive Base.metadata.drop_all() or create_all() calls.
+    """
+    is_safe, err_msg = validate_test_database_target(TEST_DB_URL)
+    if not is_safe:
+        raise RuntimeError(f"ABORTED DESTRUCTIVE DATABASE FIXTURE: {err_msg}")
+
     engine = create_engine(TEST_DB_URL, echo=False)
     # Ensure fresh schema tables
     Base.metadata.drop_all(bind=engine)
@@ -179,34 +252,60 @@ def test_postgres_readonly_transaction_enforcement(postgres_engine):
 
 
 def test_postgres_restricted_role_permission_boundary(postgres_engine):
-    """Verify that a least-privilege PostgreSQL role can SELECT but cannot mutate data."""
+    """Verify that a least-privilege PostgreSQL role can SELECT but has no mutation privileges.
+
+    Uses PostgreSQL's has_table_privilege() to verify catalog permissions independently
+    of transaction-level read-only enforcement.
+    """
     role_name = "querymind_test_readonly_app"
     role_pass = "app_readonly_secret_123"
 
+    # Pre-test cleanup: ensure no leftover role from interrupted earlier test runs
+    _cleanup_test_role(postgres_engine, role_name)
+
     with postgres_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-        conn.execute(text(f"DROP ROLE IF EXISTS {role_name};"))
         conn.execute(text(
             f"CREATE ROLE {role_name} WITH LOGIN PASSWORD '{role_pass}' "
-            "NOSUPERUSER NOCREATEDB NOCREATEROLE;"
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;"
         ))
         conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role_name};"))
         conn.execute(text(f"GRANT SELECT ON students, courses, enrollments TO {role_name};"))
         conn.execute(text(f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON students, courses, enrollments FROM {role_name};"))
 
-    # Connect as the restricted role
-    from urllib.parse import urlparse, urlunparse
+    # 1. Independent catalog privilege verification using has_table_privilege()
+    with postgres_engine.connect() as conn:
+        for table in ["students", "courses", "enrollments"]:
+            # Confirm SELECT privilege is granted
+            has_select = conn.execute(
+                text("SELECT has_table_privilege(:role, :tbl, 'SELECT');"),
+                {"role": role_name, "tbl": table},
+            ).scalar()
+            assert has_select is True, f"Expected role {role_name} to have SELECT privilege on {table}"
+
+            # Confirm all mutating privileges are strictly revoked
+            for priv in ["INSERT", "UPDATE", "DELETE", "TRUNCATE"]:
+                has_mut = conn.execute(
+                    text("SELECT has_table_privilege(:role, :tbl, :priv);"),
+                    {"role": role_name, "tbl": table, "priv": priv},
+                ).scalar()
+                assert has_mut is False, f"Expected role {role_name} NOT to have {priv} privilege on {table}"
+
+    # 2. Connect as the restricted role and verify execution behavior
     parsed = urlparse(TEST_DB_URL)
-    netloc = f"{role_name}:{role_pass}@{parsed.hostname or 'localhost'}:{parsed.port or 5432}"
+    h = parsed.hostname or "localhost"
+    p = parsed.port or 5432
+    netloc = f"{role_name}:{role_pass}@{h}:{p}"
     ro_url = urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
-    ro_engine = create_engine(ro_url)
+    ro_engine = None
     try:
-        # 1. SELECT query must succeed
+        ro_engine = create_engine(ro_url)
+        # Permitted SELECT query must succeed
         res = execute_read_query("SELECT name, cgpa FROM students;", engine=ro_engine)
         assert res["status"] == "database_success"
         assert res["row_count"] == 5
 
-        # 2. Direct INSERT attempt bypassing application validation must fail at database level
+        # Direct INSERT attempt bypassing application validation must fail at database permission layer
         res_write = execute_read_query(
             "INSERT INTO students (student_id, name, cgpa, department, batch) VALUES (999, 'Bad', 0.0, 'CSE', 2024);",
             engine=ro_engine,
@@ -216,6 +315,7 @@ def test_postgres_restricted_role_permission_boundary(postgres_engine):
         assert "permission denied" in res_write["error"].lower()
 
     finally:
-        ro_engine.dispose()
-        with postgres_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-            conn.execute(text(f"DROP ROLE IF EXISTS {role_name};"))
+        # Safe cleanup: dispose restricted role engine first, then drop owned privileges and role
+        if ro_engine is not None:
+            ro_engine.dispose()
+        _cleanup_test_role(postgres_engine, role_name)

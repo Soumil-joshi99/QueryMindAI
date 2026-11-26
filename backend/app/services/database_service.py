@@ -448,7 +448,24 @@ def execute_read_query(
                 try:
                     session.execute(text("SELECT set_config('transaction_read_only', 'on', true)"))
                 except Exception as ro_err:
-                    logger.debug("Could not set session transaction_read_only: %s", ro_err)
+                    safe_msg = _sanitize_db_error(str(ro_err))
+                    logger.error(
+                        "Security failure: could not enforce session transaction_read_only: %s",
+                        safe_msg,
+                    )
+                    try:
+                        session.rollback()
+                    except Exception as rb_err:
+                        logger.debug("Session rollback failed after read-only enforcement error: %s", rb_err)
+                    return {
+                        "status": "error",
+                        "columns": [],
+                        "rows": [],
+                        "row_count": 0,
+                        "execution_time_ms": max(1, round((time.perf_counter() - start_time) * 1000)),
+                        "error": f"Security violation: Failed to enforce read-only transaction mode: {safe_msg}",
+                    }
+
                 if timeout_duration > 0:
                     try:
                         session.execute(
@@ -469,11 +486,28 @@ def execute_read_query(
             eng = engine or get_engine()
             with eng.connect() as conn:
                 if eng.dialect.name == "postgresql":
-                    conn = conn.execution_options(postgresql_readonly=True)
                     try:
+                        conn = conn.execution_options(postgresql_readonly=True)
                         conn.execute(text("SELECT set_config('transaction_read_only', 'on', true)"))
                     except Exception as ro_err:
-                        logger.debug("Could not set connection transaction_read_only: %s", ro_err)
+                        safe_msg = _sanitize_db_error(str(ro_err))
+                        logger.error(
+                            "Security failure: could not enforce connection transaction_read_only: %s",
+                            safe_msg,
+                        )
+                        try:
+                            conn.rollback()
+                        except Exception as rb_err:
+                            logger.debug("Connection rollback failed after read-only enforcement error: %s", rb_err)
+                        return {
+                            "status": "error",
+                            "columns": [],
+                            "rows": [],
+                            "row_count": 0,
+                            "execution_time_ms": max(1, round((time.perf_counter() - start_time) * 1000)),
+                            "error": f"Security violation: Failed to enforce read-only transaction mode: {safe_msg}",
+                        }
+
                     if timeout_duration > 0:
                         try:
                             conn.execute(

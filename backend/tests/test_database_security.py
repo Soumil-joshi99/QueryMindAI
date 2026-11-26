@@ -247,3 +247,94 @@ def test_execute_read_query_blocks_mutations_before_execution():
     assert res["status"] == "error"
     assert "Security violation" in res["error"]
     assert res["row_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 9. Fail-Closed Read-Only Enforcement Tests
+# ---------------------------------------------------------------------------
+
+def test_execute_read_query_engine_fails_closed_when_readonly_cannot_be_set():
+    """Verify that if set_config('transaction_read_only') fails on an Engine connection,
+    the user query is aborted, the connection is rolled back, and user SQL is not executed.
+    """
+    from unittest.mock import MagicMock
+    from sqlalchemy.exc import OperationalError
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+    mock_conn = MagicMock()
+    mock_engine.connect.return_value.__enter__.return_value = mock_conn
+    mock_conn.execution_options.return_value = mock_conn
+
+    # First call is set_config('transaction_read_only'...), which fails
+    mock_conn.execute.side_effect = OperationalError("Simulated read-only failure", None, None)
+
+    res = execute_read_query("SELECT name FROM students;", engine=mock_engine)
+
+    assert res["status"] == "error"
+    assert "Failed to enforce read-only transaction mode" in res["error"]
+    assert res["row_count"] == 0
+    # Crucial: verify connection rollback was called to close the transaction safely
+    mock_conn.rollback.assert_called_once()
+    # Verify user query was not executed after the failure (only 1 execute call for set_config)
+    assert mock_conn.execute.call_count == 1
+
+
+def test_execute_read_query_session_fails_closed_when_readonly_cannot_be_set():
+    """Verify that if set_config('transaction_read_only') fails on a Session,
+    the query is aborted, session rolled back, and user SQL is not executed.
+    """
+    from unittest.mock import MagicMock
+    from sqlalchemy.exc import OperationalError
+
+    mock_session = MagicMock()
+    mock_bind = MagicMock()
+    mock_bind.dialect.name = "postgresql"
+    mock_session.get_bind.return_value = mock_bind
+
+    # First call is set_config('transaction_read_only'...), which fails
+    mock_session.execute.side_effect = OperationalError("Simulated session read-only failure", None, None)
+
+    res = execute_read_query("SELECT name FROM students;", session=mock_session)
+
+    assert res["status"] == "error"
+    assert "Failed to enforce read-only transaction mode" in res["error"]
+    assert res["row_count"] == 0
+    # Verify session rollback was called
+    mock_session.rollback.assert_called_once()
+    # Verify user query was not executed
+    assert mock_session.execute.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. Test Database Target Safeguards
+# ---------------------------------------------------------------------------
+
+def test_test_database_target_validation_safeguards():
+    """Verify that validate_test_database_target blocks non-test or missing database URLs."""
+    from backend.tests.test_postgres_integration import validate_test_database_target
+
+    # 1. Missing URL is rejected
+    valid, msg = validate_test_database_target("")
+    assert valid is False
+    assert "not configured" in msg or "not set" in msg
+
+    # 2. Non-postgres scheme is rejected
+    valid, msg = validate_test_database_target("sqlite:///test.db")
+    assert valid is False
+    assert "must be a PostgreSQL connection URL" in msg
+
+    # 3. Production / application database without 'test' in the name is strictly rejected
+    valid, msg = validate_test_database_target("postgresql+psycopg://user:pass@localhost:5432/querymind_db")
+    assert valid is False
+    assert "Safety violation" in msg
+    assert "querymind_db" in msg
+
+    valid, msg = validate_test_database_target("postgresql+psycopg://user:pass@localhost:5432/production_app")
+    assert valid is False
+    assert "Safety violation" in msg
+
+    # 4. Dedicated test database with 'test' in the name is accepted
+    valid, msg = validate_test_database_target("postgresql+psycopg://user:pass@localhost:5432/querymind_test_db")
+    assert valid is True
+    assert "querymind_test_db" in msg

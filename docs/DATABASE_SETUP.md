@@ -223,3 +223,29 @@ INSERT INTO students (name) VALUES ('unauthorized');
 -- Output: ERROR: permission denied for table students
 ```
 
+---
+
+## 10. Dedicated Test Database for Integration Tests
+
+Live PostgreSQL integration tests (`backend/tests/test_postgres_integration.py`) execute destructive schema setup operations (`Base.metadata.drop_all()` and `Base.metadata.create_all()`).
+
+To safeguard application and production databases:
+- Integration tests strictly require a dedicated `TEST_DATABASE_URL` environment variable.
+- Tests will **never** fall back to `DATABASE_URL`.
+- The database name in `TEST_DATABASE_URL` **must contain `test`** (e.g., `querymind_test_db`). Tests abort before executing any DROP or CREATE operation if this check fails.
+
+### Setting Up Local Integration Testing
+
+1. Create a dedicated test database:
+   ```powershell
+   & "C:\Program Files\PostgreSQL\18\bin\createdb.exe" -U postgres -h localhost -p 5432 querymind_test_db
+   ```
+2. Configure the environment variable:
+   ```powershell
+   $env:TEST_DATABASE_URL = "postgresql+psycopg://postgres:your_password@localhost:5432/querymind_test_db"
+   ```
+3. Run the integration test suite:
+   ```powershell
+   python -m pytest -v backend/tests/test_postgres_integration.py
+   ```
+

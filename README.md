@@ -404,14 +404,17 @@ Use `main` for the integrated release. The `feature/application` branch is behin
    - `QUERYMIND_MODE`: `mock` (default for offline demo) or `database` (real NLP $\rightarrow$ SQL $\rightarrow$ PostgreSQL pipeline).
    - `DATABASE_URL`: Connection string (`postgresql+psycopg://<user>:<password>@localhost:5432/querymind_db`).
    - `CORS_ORIGINS`: Comma-separated allowed frontend origins (e.g. `http://localhost:5173`).
-   - `TEST_DATABASE_URL`: Optional test database URL for live integration tests.
+   - `TEST_DATABASE_URL`: Mandatory connection string for live PostgreSQL integration tests (`test_postgres_integration.py`). Target database name **must** contain `test` (e.g. `postgresql+psycopg://postgres:password@localhost:5432/querymind_test_db`). Integration tests **never** fall back to `DATABASE_URL` to prevent accidental destruction of application data.
 
 5. Run automated tests:
    ```bash
    # Run all backend unit, security, and integration tests:
    pytest -v backend/tests test_nlp_engine.py
 
-   # Run live PostgreSQL integration tests (requires reachable PostgreSQL server):
+   # Run live PostgreSQL integration tests (requires dedicated test database):
+   # 1. Create test database: createdb -U postgres -h localhost -p 5432 querymind_test_db
+   # 2. Set environment variable: export TEST_DATABASE_URL="postgresql+psycopg://postgres:password@localhost:5432/querymind_test_db"
+   # 3. Execute:
    pytest -v backend/tests/test_postgres_integration.py
    ```
 
