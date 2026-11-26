@@ -10,6 +10,7 @@ import os
 from urllib.parse import urlparse, urlunparse
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, Student, Course, Enrollment
@@ -305,14 +306,18 @@ def test_postgres_restricted_role_permission_boundary(postgres_engine):
         assert res["status"] == "database_success"
         assert res["row_count"] == 5
 
-        # Direct INSERT attempt bypassing application validation must fail at database permission layer
-        res_write = execute_read_query(
-            "INSERT INTO students (student_id, name, cgpa, department, batch) VALUES (999, 'Bad', 0.0, 'CSE', 2024);",
-            engine=ro_engine,
-            validate=False,
-        )
-        assert res_write["status"] == "error"
-        assert "permission denied" in res_write["error"].lower()
+        # Direct INSERT in a writable transaction (bypassing execute_read_query's
+        # transaction_read_only=on) must fail specifically due to table privileges
+        with ro_engine.connect() as ro_conn:
+            tx_ro = ro_conn.execute(text("SHOW transaction_read_only;")).scalar()
+            assert tx_ro == "off"
+
+            with pytest.raises(ProgrammingError) as exc_info:
+                ro_conn.execute(text(
+                    "INSERT INTO students (student_id, name, cgpa, department, batch) "
+                    "VALUES (999, 'Bad', 0.0, 'CSE', 2024);"
+                ))
+            assert "permission denied" in str(exc_info.value).lower()
 
     finally:
         # Safe cleanup: dispose restricted role engine first, then drop owned privileges and role
